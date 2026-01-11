@@ -1,0 +1,5 @@
+databricks-connect
+pandas
+streamlit
+numpy
+lightweight-charts
