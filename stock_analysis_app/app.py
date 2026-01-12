@@ -131,6 +131,36 @@ if st.sidebar.button("Display Charts", type="primary"):
 
 show_charts = st.session_state.get("data_loaded", False)
 
+# クエリパラメータによる上書き処理
+# ?tickers=7203,9984 のように指定された場合、その銘柄を表示する
+if "tickers" in st.query_params:
+    tickers_param = st.query_params["tickers"]
+    # str型であることを期待するが、念のためリストの場合も考慮（バージョン依存の可能性）
+    if isinstance(tickers_param, list):
+        tickers_str = tickers_param[0]
+    else:
+        tickers_str = tickers_param
+
+    if tickers_str:
+        query_codes = [t.strip() for t in tickers_str.split(',') if t.strip()]
+        
+        if query_codes:
+            # 存在確認と型合わせ
+            # query_codesは文字列だが、df_stock_list['code']は数値の可能性があるため
+            # 文字列に変換して比較し、存在する正規のコード(元の型)を取得する
+            if not df_stock_list.empty:
+                # コードを文字列化したセットを作成
+                available_codes_str = df_stock_list['code'].astype(str)
+                # クエリにあるコードのうち、マスタに存在するものだけ抽出
+                valid_mask = available_codes_str.isin(query_codes)
+                new_selected_codes = df_stock_list.loc[valid_mask, 'code'].tolist()
+
+                if new_selected_codes:
+                    show_charts = True
+                    st.sidebar.success(f"Query Param Mode: {tickers_str}")
+                else:
+                    st.sidebar.warning(f"No valid stock codes found in: {tickers_str}")
+
 # --- メインコンテンツ描画 ---
 
 with st.spinner('Loading data...'):
