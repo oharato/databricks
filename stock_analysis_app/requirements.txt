@@ -5,3 +5,4 @@ pandas
 streamlit
 numpy
 lightweight-charts
+streamlit-local-storage
