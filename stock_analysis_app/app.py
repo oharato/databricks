@@ -92,16 +92,26 @@ if not df_stock_list.empty:
     current_codes = user_data["lists"][current_list_name]
     default_labels = df_stock_list[df_stock_list['code'].isin(current_codes)]['label'].tolist()
 
+    # defaultにoptionsに含まれない値があるとエラーになるためフィルタリング
+    valid_options = set(options_map.keys())
+    filtered_default_labels = [label for label in default_labels if label in valid_options]
+
     # マルチセレクト
     selected_labels = st.sidebar.multiselect(
         "Search & Select Stocks",
         options=options_map.keys(),
-        default=default_labels,
+        default=filtered_default_labels,
         placeholder="Type code or name..."
     )
     
     # 保存ロジック
-    new_selected_codes = [options_map[label] for label in selected_labels if label in options_map]
+    visible_selected_codes = [options_map[label] for label in selected_labels if label in options_map]
+    
+    # 表示されていないが選択されていたコードを保持
+    visible_codes = set(df_filtered['code'])
+    hidden_selected_codes = [code for code in current_codes if code not in visible_codes]
+    
+    new_selected_codes = visible_selected_codes + hidden_selected_codes
     
     if set(new_selected_codes) != set(current_codes):
         user_data["lists"][current_list_name] = new_selected_codes

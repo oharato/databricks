@@ -86,3 +86,14 @@ just deploy
 │   └── requirements.txt          # Python 依存関係
 └── README.md
 ```
+
+
+## GRANT
+
+```sql
+-- アプリのサービスプリンシパルに権限を付与
+GRANT USE CATALOG ON CATALOG main TO `c4e81045-2e73-457c-b913-315bbd48ff1c`;
+GRANT USE SCHEMA ON SCHEMA main.default TO `c4e81045-2e73-457c-b913-315bbd48ff1c`;
+GRANT SELECT ON TABLE main.default.stock_prices TO `c4e81045-2e73-457c-b913-315bbd48ff1c`;
+GRANT SELECT ON TABLE main.default.stock_list TO `c4e81045-2e73-457c-b913-315bbd48ff1c`;
+```
