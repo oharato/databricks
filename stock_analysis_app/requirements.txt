@@ -1,4 +1,6 @@
 databricks-connect
+databricks-sql-connector
+python-dotenv
 pandas
 streamlit
 numpy

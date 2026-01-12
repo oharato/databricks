@@ -1,103 +1,169 @@
 import streamlit as st
-from databricks.connect import DatabricksSession
-from pyspark.sql import functions as F
-from pyspark.sql.window import Window
+import os
 import pandas as pd
 import datetime
 from lightweight_charts.widgets import StreamlitChart
+from dotenv import load_dotenv
+
+# ローカル環境変数を読み込む
+load_dotenv()
+
+# 接続モードの判定
+HTTP_PATH = os.getenv("DATABRICKS_HTTP_PATH")
+IS_SQL_MODE = HTTP_PATH is not None
+
+# ライブラリのインポート分岐
+if IS_SQL_MODE:
+    from databricks import sql
+else:
+    from databricks.connect import DatabricksSession
+    from pyspark.sql import functions as F
+    from pyspark.sql.window import Window
 
 # ページ設定
 st.set_page_config(layout="wide")
-st.title("Stock Price Analysis App (Databricks)")
+title = "Stock Price Analysis App " + ("(Local SQL Mode)" if IS_SQL_MODE else "(Databricks Apps)")
+st.title(title)
 
-# Sparkの初期化
-# Databricks Apps環境では、databricks-connectを使用する場合、認証は自動的に処理されます
+# Sparkの初期化 (Databricks Apps モードのみ)
 def get_spark():
+    if IS_SQL_MODE:
+        return None
+        
     session = DatabricksSession.builder.serverless().getOrCreate()
     try:
-        # INACTIVITY_TIMEOUTを処理するためのセッション検証
         session.sql("SELECT 1").collect()
     except Exception as e:
         if "INACTIVITY_TIMEOUT" in str(e) or "session_id is no longer usable" in str(e):
-            # print("セッションがタイムアウトしました。再接続中...")
             session.stop()
             session = DatabricksSession.builder.serverless().getOrCreate()
         else:
-             # 別のエラーの場合は、バブルアップさせるか処理する可能性があります
-             # 今のところはログを出力してセッションを返すか、例外を発生させます
              st.error(f"Spark接続チェック失敗: {e}")
              raise e
     return session
 
 try:
     spark = get_spark()
-
-
 except Exception as e:
     st.error(f"Failed to connect to Databricks: {e}")
     st.stop()
 
 # --- 設定 ---
-# 実際のシナリオでは、テーブルから一意のコードをクエリする場合があります
 TARGET_CODES = ['1301', '3031'] 
 
 # サイドバーコントロール
 st.sidebar.header("Configuration")
 selected_code = st.sidebar.selectbox("Select Stock Code", TARGET_CODES)
-# 複数のチャートビューはすべてのインターバルを表示することを意味するため、単一のインターバルセレクターを削除します
-# interval = st.sidebar.selectbox("Interval", ["DAILY", "WEEKLY", "MONTHLY"])
-# 日数設定はインターバルタイプごとに固定されました
 
 # 1. データの読み込みと処理
 @st.cache_data(ttl=3600)
 def load_and_process_data(code, interval, days):
     try:
-        # テーブルのロード
-        table_name = "main.default.stock_prices"
-        df = spark.table(table_name).filter(F.col("code") == code)
-        
-        # sample.mdからの日付変換ロジック
-        if "dateString" in df.columns:
-            df = df.withColumn("trade_date", F.to_timestamp(F.col("dateString"), "yyyy-MM-dd"))
-        elif "date" in df.columns:
-            df = df.withColumn("trade_date", (F.col("date").cast("double") / 1000).cast("timestamp"))
-        else:
-            # カラムが異なる場合のフォールバックまたはエラー
-            pass
-
-        # 集計ロジック
-        if interval == 'DAILY':
-            df_agg = df.select("code", "trade_date", "open", "high", "low", "close", "volume")
-        elif interval == 'WEEKLY':
-            df_agg = df.withColumn("year_week", F.date_trunc("week", "trade_date")) \
-                .groupBy("code", "year_week").agg(
-                    F.first("open").alias("open"), F.max("high").alias("high"), F.min("low").alias("low"), F.last("close").alias("close"),
-                    F.sum("volume").alias("volume"), F.min("trade_date").alias("trade_date")
-                )
-        elif interval == 'MONTHLY':
-            df_agg = df.withColumn("year_month", F.date_trunc("month", "trade_date")) \
-                .groupBy("code", "year_month").agg(
-                    F.first("open").alias("open"), F.max("high").alias("high"), F.min("low").alias("low"), F.last("close").alias("close"),
-                    F.sum("volume").alias("volume"), F.min("trade_date").alias("trade_date")
-                )
-        
-        # 移動平均
-        w = Window.partitionBy("code").orderBy("trade_date")
-        for window_size in [5, 25, 75]:
-            df_agg = df_agg.withColumn(f"ma_{window_size}", F.avg("close").over(w.rowsBetween(-window_size + 1, 0)))
-
-        # 日付によるフィルタリング
-        # 最初に最大日付を計算する必要があります。
-        # 注: Streamlit/Sparkアプリでは、必要なものだけを収集するように最適化してください。
-        max_date_row = df_agg.select(F.max("trade_date")).collect()
-        if not max_date_row or max_date_row[0][0] is None:
-            return None
+        if IS_SQL_MODE:
+            # --- SQL Connector (Local) Mode ---
+            with sql.connect(
+                server_hostname=os.getenv("DATABRICKS_HOST"),
+                http_path=HTTP_PATH,
+                access_token=os.getenv("DATABRICKS_TOKEN")
+            ) as connection:
+                # データを取得
+                query = f"SELECT * FROM main.default.stock_prices WHERE code = '{code}'"
+                with connection.cursor() as cursor:
+                    cursor.execute(query)
+                    # Pandas DataFrame として取得
+                    df = cursor.fetchall_arrow().to_pandas()
             
-        max_date = max_date_row[0][0]
-        cutoff_date = max_date - datetime.timedelta(days=days)
+            # 日付変換ロジック (Pandas)
+            if "dateString" in df.columns:
+                df["trade_date"] = pd.to_datetime(df["dateString"])
+            elif "date" in df.columns:
+                df["trade_date"] = pd.to_datetime(df["date"], unit='ms')
+            
+            # 集計ロジック (Pandas)
+            if interval == 'DAILY':
+                df_agg = df[["code", "trade_date", "open", "high", "low", "close", "volume"]].copy()
+            elif interval == 'WEEKLY':
+                # 'W-MON' は月曜始まり
+                df_agg = df.resample('W-MON', on='trade_date').agg({
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum',
+                    'code': 'first'
+                }).reset_index()
+                # データがない週を除外
+                df_agg = df_agg.dropna(subset=['open'])
+            elif interval == 'MONTHLY':
+                df_agg = df.resample('ME', on='trade_date').agg({
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum',
+                    'code': 'first'
+                }).reset_index()
+                df_agg = df_agg.dropna(subset=['open'])
+            
+            # 移動平均 (Pandas)
+            df_agg = df_agg.sort_values('trade_date')
+            for window_size in [5, 25, 75]:
+                # Spark の Window.rowsBetween(-window_size + 1, 0) と同じ挙動にする
+                df_agg[f"ma_{window_size}"] = df_agg['close'].rolling(window=window_size, min_periods=1).mean()
+            
+            # 日付によるフィルタリング
+            max_date = df_agg['trade_date'].max()
+            if pd.isna(max_date):
+                return None
+            
+            cutoff_date = max_date - datetime.timedelta(days=days)
+            pdf = df_agg[df_agg['trade_date'] >= cutoff_date].copy()
+            
+        else:
+            # --- Databricks Connect (Spark) Mode ---
+            table_name = "main.default.stock_prices"
+            df = spark.table(table_name).filter(F.col("code") == code)
+            
+            # sample.mdからの日付変換ロジック
+            if "dateString" in df.columns:
+                df = df.withColumn("trade_date", F.to_timestamp(F.col("dateString"), "yyyy-MM-dd"))
+            elif "date" in df.columns:
+                df = df.withColumn("trade_date", (F.col("date").cast("double") / 1000).cast("timestamp"))
+            else:
+                pass
+
+            # 集計ロジック
+            if interval == 'DAILY':
+                df_agg = df.select("code", "trade_date", "open", "high", "low", "close", "volume")
+            elif interval == 'WEEKLY':
+                df_agg = df.withColumn("year_week", F.date_trunc("week", "trade_date")) \
+                    .groupBy("code", "year_week").agg(
+                        F.first("open").alias("open"), F.max("high").alias("high"), F.min("low").alias("low"), F.last("close").alias("close"),
+                        F.sum("volume").alias("volume"), F.min("trade_date").alias("trade_date")
+                    )
+            elif interval == 'MONTHLY':
+                df_agg = df.withColumn("year_month", F.date_trunc("month", "trade_date")) \
+                    .groupBy("code", "year_month").agg(
+                        F.first("open").alias("open"), F.max("high").alias("high"), F.min("low").alias("low"), F.last("close").alias("close"),
+                        F.sum("volume").alias("volume"), F.min("trade_date").alias("trade_date")
+                    )
+            
+            # 移動平均
+            w = Window.partitionBy("code").orderBy("trade_date")
+            for window_size in [5, 25, 75]:
+                df_agg = df_agg.withColumn(f"ma_{window_size}", F.avg("close").over(w.rowsBetween(-window_size + 1, 0)))
+
+            # 日付によるフィルタリング
+            max_date_row = df_agg.select(F.max("trade_date")).collect()
+            if not max_date_row or max_date_row[0][0] is None:
+                return None
+                
+            max_date = max_date_row[0][0]
+            cutoff_date = max_date - datetime.timedelta(days=days)
+            
+            pdf = df_agg.filter(F.col("trade_date") >= cutoff_date).orderBy("trade_date").toPandas()
         
-        # フィルタリングしてPandasに変換
-        pdf = df_agg.filter(F.col("trade_date") >= cutoff_date).orderBy("trade_date").toPandas()
+        # --- 共通の後処理 ---
         
         # lightweight-charts用にリネーム
         rename_dict = {'trade_date': 'date'}
@@ -106,19 +172,15 @@ def load_and_process_data(code, interval, days):
         
         pdf = pdf.rename(columns=rename_dict)
         
-        # JSONシリアル化のために日付が文字列形式(YYYY-MM-DD)であることを確認します
         if 'date' in pdf.columns:
             pdf['date'] = pdf['date'].dt.strftime('%Y-%m-%d')
             
-        # 問題を引き起こす可能性のあるカラム（グループ化タイムスタンプなど）を削除し、チャートに必要なものだけを保持します
-        # date, open, high, low, close, volume, およびMAカラムが必要です。
         keep_cols = ['date', 'open', 'high', 'low', 'close', 'volume']
         expected_mas = [f'MA{ma}' for ma in [5, 25, 75]]
         for ma_col in expected_mas:
             if ma_col in pdf.columns:
                 keep_cols.append(ma_col)
                 
-        # エラーを避けるために利用可能なカラムと交差させます
         final_cols = [c for c in keep_cols if c in pdf.columns]
         pdf = pdf[final_cols]
             
@@ -126,6 +188,7 @@ def load_and_process_data(code, interval, days):
     except Exception as e:
         st.error(f"Error processing data: {e}")
         return None
+
 
 with st.spinner('Loading data...'):
     interval_configs = [("MONTHLY", 3000), ("WEEKLY", 600), ("DAILY", 120)]
