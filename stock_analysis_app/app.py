@@ -3,7 +3,7 @@ import streamlit as st
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 from utils import IS_SQL_MODE
-from session_store import init_session_state, update_ls
+from session_store import init_session_state, update_ls, LS_KEY
 from data_provider import load_stock_list, load_and_process_data
 from components import render_chart
 
@@ -11,6 +11,19 @@ from components import render_chart
 st.set_page_config(layout="wide")
 title = "Stock Price Analysis App " + ("(Local SQL Mode)" if IS_SQL_MODE else "(Databricks Apps)")
 st.title(title)
+
+# JavaScriptでlocalStorageからデータを読み込み、session_stateに保存
+# このスクリプトはページ読み込み時に実行される
+st.write(f"""
+<script>
+    // localStorageから前回保存されたデータを読み込む
+    var storedData = localStorage.getItem('{LS_KEY}');
+    if (storedData) {{
+        window.localStorage_data = storedData;
+        console.log('Loaded from localStorage:', storedData);
+    }}
+</script>
+""", unsafe_allow_html=True)
 
 # 初期化
 init_session_state()

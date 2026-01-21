@@ -1,62 +1,62 @@
 import json
-import time
 import streamlit as st
-from streamlit_local_storage import LocalStorage
+import streamlit.components.v1 as components
 
-__all__ = ['init_session_state', 'update_ls', 'get_state_from_ls']
+__all__ = ['init_session_state', 'update_ls']
 
-# localStorage コンポーネントの初期化
-# Streamlitのコンポーネントはメインスクリプトで1回だけ呼ばれるのが望ましいため、
-# ここで初期化するが、import時に実行される点に注意。
-# localS = LocalStorage()
 LS_KEY = "stock_app_user_data"
 
 # デフォルトの銘柄リスト構造
 DEFAULT_LISTS = {"Default": ["1301", "3031"]}
 DEFAULT_STATE = {"lists": DEFAULT_LISTS, "current_list": "Default"}
 
-def get_local_storage():
-    return LocalStorage()
+def load_from_browser_storage():
+    """ブラウザのlocalStorageからデータを読み込む"""
+    html_code = f"""
+    <script>
+        const data = localStorage.getItem('{LS_KEY}');
+        const result = data ? JSON.parse(data) : null;
+        window.parent.postMessage({{
+            type: 'streamlit:setComponentValue',
+            value: result
+        }}, '*');
+    </script>
+    """
+    result = components.html(html_code, height=0)
+    return result if result else None
 
-def get_state_from_ls():
-    """localStorageから状態を取得する。取得できない場合はデフォルトまたはsession_stateを返す"""
-    if "user_data_loaded" in st.session_state and st.session_state.user_data_loaded:
-        return st.session_state.user_data
-
-    ls_item = get_local_storage().getItem(LS_KEY)
-    if ls_item:
-        try:
-            return json.loads(ls_item)
-        except:
-            return DEFAULT_STATE
-    return DEFAULT_STATE
-
-def save_state_to_ls(state):
-    """状態をlocalStorageに保存する"""
-    if st.session_state.get("first_run", False):
-        return
-
-    json_str = json.dumps(state)
-    get_local_storage().setItem(LS_KEY, json_str, key=f"set_user_data_{int(time.time())}")
+def save_to_browser_storage(state):
+    """ブラウザのlocalStorageにデータを保存する"""
+    json_str = json.dumps(state).replace("'", "\\'")
+    html_code = f"""
+    <script>
+        localStorage.setItem('{LS_KEY}', '{json_str}');
+    </script>
+    """
+    components.html(html_code, height=0)
 
 def update_ls():
-    """session_stateの内容をlocalStorageに保存する"""
-    save_state_to_ls(st.session_state.user_data)
+    """session_stateの内容をブラウザのlocalStorageに保存する"""
+    if not st.session_state.get("first_run", False):
+        save_to_browser_storage(st.session_state.user_data)
 
 def init_session_state():
     """セッション状態の初期化とロード処理"""
+    # 初回実行フラグの設定
     if "is_started" not in st.session_state:
         st.session_state.is_started = True
         st.session_state.first_run = True
     else:
         st.session_state.first_run = False
 
+    # user_dataの初期化
     if "user_data" not in st.session_state:
         st.session_state.user_data = DEFAULT_STATE
+        st.session_state.user_data_loaded = False
 
-    # ロード処理
-    loaded_state = get_state_from_ls()
-    if loaded_state != DEFAULT_STATE:
-        if st.session_state.user_data == DEFAULT_STATE:
-             st.session_state.user_data = loaded_state
-             st.session_state.user_data_loaded = True
+    # 初回のみブラウザのlocalStorageから読み込み
+    if not st.session_state.user_data_loaded:
+        loaded_state = load_from_browser_storage()
+        if loaded_state:
+            st.session_state.user_data = loaded_state
+        st.session_state.user_data_loaded = True
