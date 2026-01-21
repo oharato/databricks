@@ -1,6 +1,6 @@
 import json
 import streamlit as st
-import streamlit.components.v1 as components
+from streamlit_javascript import st_javascript
 
 __all__ = ['init_session_state', 'update_ls']
 
@@ -12,28 +12,21 @@ DEFAULT_STATE = {"lists": DEFAULT_LISTS, "current_list": "Default"}
 
 def load_from_browser_storage():
     """ブラウザのlocalStorageからデータを読み込む"""
-    html_code = f"""
-    <script>
-        const data = localStorage.getItem('{LS_KEY}');
-        const result = data ? JSON.parse(data) : null;
-        window.parent.postMessage({{
-            type: 'streamlit:setComponentValue',
-            value: result
-        }}, '*');
-    </script>
+    js_code = f"""
+    const data = localStorage.getItem('{LS_KEY}');
+    return data ? JSON.parse(data) : null;
     """
-    result = components.html(html_code, height=0)
+    result = st_javascript(js_code)
     return result if result else None
 
 def save_to_browser_storage(state):
     """ブラウザのlocalStorageにデータを保存する"""
-    json_str = json.dumps(state).replace("'", "\\'")
-    html_code = f"""
-    <script>
-        localStorage.setItem('{LS_KEY}', '{json_str}');
-    </script>
+    json_str = json.dumps(state)
+    js_code = f"""
+    localStorage.setItem('{LS_KEY}', {json.dumps(json_str)});
+    return true;
     """
-    components.html(html_code, height=0)
+    st_javascript(js_code)
 
 def update_ls():
     """session_stateの内容をブラウザのlocalStorageに保存する"""
