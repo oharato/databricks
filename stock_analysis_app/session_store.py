@@ -49,14 +49,17 @@ def init_session_state():
     else:
         st.session_state.first_run = False
 
-    # user_dataの初期化
+    # user_dataの初期化（まず必ずDEFAULT_STATEで初期化）
     if "user_data" not in st.session_state:
-        st.session_state.user_data = DEFAULT_STATE
+        st.session_state.user_data = DEFAULT_STATE.copy()
         st.session_state.user_data_loaded = False
 
     # 初回のみブラウザのlocalStorageから読み込み
     if not st.session_state.user_data_loaded:
         loaded_state = load_from_browser_storage()
-        if loaded_state:
+        if loaded_state and isinstance(loaded_state, dict) and "lists" in loaded_state:
             st.session_state.user_data = loaded_state
-        st.session_state.user_data_loaded = True
+            st.session_state.user_data_loaded = True
+        else:
+            # 読み込み失敗または初回アクセス時はデフォルトを維持
+            st.session_state.user_data_loaded = True
