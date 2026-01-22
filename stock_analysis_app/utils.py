@@ -9,6 +9,9 @@ load_dotenv()
 HTTP_PATH = os.getenv("DATABRICKS_HTTP_PATH")
 IS_SQL_MODE = HTTP_PATH is not None
 
+# 定数定義
+TICKER_DELIMITER = "-"
+
 # ライブラリのインポート分岐
 if IS_SQL_MODE:
     from databricks import sql

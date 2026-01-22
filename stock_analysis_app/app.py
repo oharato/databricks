@@ -2,8 +2,8 @@ import concurrent.futures
 import streamlit as st
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
-from utils import IS_SQL_MODE
-from session_store import init_session_state, update_ls
+from utils import IS_SQL_MODE, TICKER_DELIMITER
+from session_store import init_session_state
 from data_provider import load_stock_list, load_and_process_data
 from components import render_chart
 
@@ -17,6 +17,31 @@ init_session_state()
 
 # 1. マスタデータの読み込み
 df_stock_list = load_stock_list()
+
+# クエリパラメータの処理 (初回アクセス時のみ)
+if st.session_state.get("first_run", False) and "tickers" in st.query_params:
+    tickers_param = st.query_params["tickers"]
+    if isinstance(tickers_param, list):
+        tickers_str = tickers_param[0]
+    else:
+        tickers_str = tickers_param
+
+    if tickers_str:
+        query_codes = [t.strip() for t in tickers_str.split(TICKER_DELIMITER) if t.strip()]
+        
+        if query_codes and not df_stock_list.empty:
+            available_codes_str = df_stock_list['code'].astype(str)
+            valid_mask = available_codes_str.isin(query_codes)
+            valid_codes = df_stock_list.loc[valid_mask, 'code'].tolist()
+
+            if valid_codes:
+                # カレントリストを上書きしてチャート表示を有効化
+                current_list = st.session_state.user_data["current_list"]
+                st.session_state.user_data["lists"][current_list] = valid_codes
+                st.session_state.data_loaded = True
+                st.sidebar.success(f"Loaded from URL: {tickers_str}")
+            else:
+                st.sidebar.warning(f"No valid stock codes found in: {tickers_str}")
 
 # --- サイドバー UI ---
 st.sidebar.header("Configuration")
@@ -34,7 +59,6 @@ current_list_name = st.sidebar.selectbox(
 # リスト切り替え時の処理
 if current_list_name != user_data["current_list"]:
     user_data["current_list"] = current_list_name
-    update_ls()
     st.rerun()
 
 # リスト操作用UI
@@ -45,14 +69,12 @@ with st.sidebar.expander("Manage Lists"):
         if new_list_name and new_list_name not in user_data["lists"]:
             user_data["lists"][new_list_name] = []
             user_data["current_list"] = new_list_name
-            update_ls()
             st.rerun()
     
     if col_del.button("Delete List"):
         if len(user_data["lists"]) > 1:
             del user_data["lists"][current_list_name]
             user_data["current_list"] = list(user_data["lists"].keys())[0]
-            update_ls()
             st.rerun()
         else:
             st.sidebar.warning("Cannot delete the last list.")
@@ -115,7 +137,6 @@ if not df_stock_list.empty:
     
     if set(new_selected_codes) != set(current_codes):
         user_data["lists"][current_list_name] = new_selected_codes
-        update_ls()
         if "data_loaded" in st.session_state:
             del st.session_state.data_loaded
         st.rerun()
@@ -128,38 +149,9 @@ else:
 st.sidebar.markdown("---")
 if st.sidebar.button("Display Charts", type="primary"):
     st.session_state.data_loaded = True
+    st.query_params["tickers"] = TICKER_DELIMITER.join(map(str, new_selected_codes))
 
 show_charts = st.session_state.get("data_loaded", False)
-
-# クエリパラメータによる上書き処理
-# ?tickers=7203,9984 のように指定された場合、その銘柄を表示する
-if "tickers" in st.query_params:
-    tickers_param = st.query_params["tickers"]
-    # str型であることを期待するが、念のためリストの場合も考慮（バージョン依存の可能性）
-    if isinstance(tickers_param, list):
-        tickers_str = tickers_param[0]
-    else:
-        tickers_str = tickers_param
-
-    if tickers_str:
-        query_codes = [t.strip() for t in tickers_str.split(',') if t.strip()]
-        
-        if query_codes:
-            # 存在確認と型合わせ
-            # query_codesは文字列だが、df_stock_list['code']は数値の可能性があるため
-            # 文字列に変換して比較し、存在する正規のコード(元の型)を取得する
-            if not df_stock_list.empty:
-                # コードを文字列化したセットを作成
-                available_codes_str = df_stock_list['code'].astype(str)
-                # クエリにあるコードのうち、マスタに存在するものだけ抽出
-                valid_mask = available_codes_str.isin(query_codes)
-                new_selected_codes = df_stock_list.loc[valid_mask, 'code'].tolist()
-
-                if new_selected_codes:
-                    show_charts = True
-                    st.sidebar.success(f"Query Param Mode: {tickers_str}")
-                else:
-                    st.sidebar.warning(f"No valid stock codes found in: {tickers_str}")
 
 # --- メインコンテンツ描画 ---
 
