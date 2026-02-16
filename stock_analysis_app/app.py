@@ -333,9 +333,15 @@ st.sidebar.markdown("---")
 if new_selected_codes:
     st.sidebar.caption(f"📋 {len(new_selected_codes)} stock(s) in current list")
 
+def update_query_params(tickers_value):
+    try:
+        st.query_params["tickers"] = tickers_value
+    except Exception:
+        st.experimental_set_query_params(tickers=tickers_value)
+
 if st.sidebar.button("📈 Display Charts", type="primary", use_container_width=True):
     st.session_state.data_loaded = True
-    st.query_params["tickers"] = TICKER_DELIMITER.join(map(str, new_selected_codes))
+    update_query_params(TICKER_DELIMITER.join(map(str, new_selected_codes)))
 
 show_charts = st.session_state.get("data_loaded", False)
 
@@ -365,6 +371,7 @@ if show_charts and new_selected_codes:
         default=default_labels
     )
     selected_codes = [label_to_code[label] for label in selected_labels]
+
 
     if not selected_codes:
         st.info("💡 Select at least one stock to load charts.")
