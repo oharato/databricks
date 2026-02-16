@@ -1,6 +1,4 @@
-import concurrent.futures
 import streamlit as st
-from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 from utils import IS_SQL_MODE, TICKER_DELIMITER
 from session_store import init_session_state
@@ -151,10 +149,10 @@ if not df_stock_list.empty:
     )
 
     def render_checkbox_group(label, options, key_prefix, columns=3):
-        st.sidebar.markdown(f"**{label}**")
+        st.markdown(f"**{label}**")
         if not options:
             return []
-        cols = st.sidebar.columns(columns)
+        cols = st.columns(columns)
         selected = []
         for i, option in enumerate(options):
             key = f"{key_prefix}_{option}"
@@ -163,31 +161,51 @@ if not df_stock_list.empty:
                 selected.append(option)
         return selected
 
-    # フィルタ用コンテナ（デフォルトで展開）
-    with st.sidebar.expander("🔍 Filter Options", expanded=True):
-        # 市場フィルタ
-        markets = sorted(df_stock_list['market'].dropna().unique())
-        selected_markets = render_checkbox_group("Market", markets, "market", columns=2)
-        
-        # 33業種フィルタ
-        sectors = sorted(df_stock_list['sector33'].dropna().unique())
-        selected_sectors = render_checkbox_group("Sector (33)", sectors, "sector33", columns=2)
-        
-        # 17業種フィルタ
-        sub_sectors = sorted(df_stock_list['sector17'].dropna().unique())
-        selected_sub_sectors = render_checkbox_group("Sector (17)", sub_sectors, "sector17", columns=2)
-        
-        # フィルタのクリアボタン
-        if selected_markets or selected_sectors or selected_sub_sectors:
-            if st.button("🔄 Clear All Filters", use_container_width=True):
-                # すべてのフィルタチェックボックスをクリア
-                for market in markets:
-                    st.session_state[f"market_{market}"] = False
-                for sector in sectors:
-                    st.session_state[f"sector33_{sector}"] = False
-                for sub_sector in sub_sectors:
-                    st.session_state[f"sector17_{sub_sector}"] = False
-                st.rerun()
+    markets = sorted(df_stock_list['market'].dropna().unique())
+    sectors = sorted(df_stock_list['sector33'].dropna().unique())
+    sub_sectors = sorted(df_stock_list['sector17'].dropna().unique())
+
+    st.session_state.setdefault("stock_search", "")
+
+    def clear_filter_state(markets, sectors, sub_sectors):
+        for market in markets:
+            st.session_state[f"market_{market}"] = False
+        for sector in sectors:
+            st.session_state[f"sector33_{sector}"] = False
+        for sub_sector in sub_sectors:
+            st.session_state[f"sector17_{sub_sector}"] = False
+        st.session_state["stock_search"] = ""
+
+    with st.sidebar.form("filter_form", border=False):
+        # フィルタ用コンテナ（デフォルトで展開）
+        with st.expander("🔍 Filter Options", expanded=True):
+            # 市場フィルタ
+            selected_markets = render_checkbox_group("Market", markets, "market", columns=2)
+
+            # 33業種フィルタ
+            selected_sectors = render_checkbox_group("Sector (33)", sectors, "sector33", columns=2)
+
+            # 17業種フィルタ
+            selected_sub_sectors = render_checkbox_group("Sector (17)", sub_sectors, "sector17", columns=2)
+
+        st.markdown("### 🔎 Search & Select Stocks")
+
+        # 検索ボックス
+        search_query = st.text_input(
+            "Search by code or name",
+            key="stock_search",
+            placeholder="Type to filter stocks...",
+            label_visibility="collapsed"
+        )
+
+        form_cols = st.columns(2)
+        form_cols[0].form_submit_button("Apply Filters", use_container_width=True)
+        form_cols[1].form_submit_button(
+            "Clear Filters",
+            use_container_width=True,
+            on_click=clear_filter_state,
+            args=(markets, sectors, sub_sectors)
+        )
 
     # DataFrameのフィルタリング
     df_filtered = df_stock_list.copy()
@@ -226,16 +244,6 @@ if not df_stock_list.empty:
                 st.markdown(f"- {info}")
     else:
         st.sidebar.info(f"📊 **Showing all {total_stocks} stocks**")
-    
-    st.sidebar.markdown("### 🔎 Search & Select Stocks")
-    
-    # 検索ボックス
-    search_query = st.sidebar.text_input(
-        "Search by code or name",
-        key="stock_search",
-        placeholder="Type to filter stocks...",
-        label_visibility="collapsed"
-    )
     
     # 検索によるフィルタリング
     filtered_options = options_map.items()
@@ -340,59 +348,52 @@ if show_charts and new_selected_codes:
     if len(new_selected_codes) > MAX_STOCKS_DISPLAY:
         st.warning(f"⚠️ Displaying first {MAX_STOCKS_DISPLAY} of {len(new_selected_codes)} selected stocks for performance. Please reduce selection for faster loading.")
     
-    st.info(f"📊 Loading charts for {len(display_codes)} stock(s)...")
+    stock_name_map = {}
+    if not df_stock_list.empty:
+        stock_name_map = dict(zip(df_stock_list["code"], df_stock_list["name"]))
+
+    label_to_code = {
+        f"{code}: {stock_name_map.get(code, code)}": code
+        for code in display_codes
+    }
+
+    default_labels = list(label_to_code.keys())[:5]
+    selected_labels = st.multiselect(
+        "Stocks to render",
+        options=list(label_to_code.keys()),
+        default=default_labels
+    )
+    selected_codes = [label_to_code[label] for label in selected_labels]
+
+    if not selected_codes:
+        st.info("💡 Select at least one stock to load charts.")
+        selected_codes = []
+    else:
+        st.info(f"📊 Loading charts for {len(selected_codes)} stock(s)...")
     
     interval_configs = [("MONTHLY", 3000), ("WEEKLY", 600), ("DAILY", 120)]
     
     # 選択された各銘柄についてループ
-    for idx, target_code in enumerate(display_codes, 1):
-        # 銘柄情報の取得
-        stock_info = df_stock_list[df_stock_list['code'] == target_code].iloc[0] if not df_stock_list.empty else None
-        stock_name = stock_info['name'] if stock_info is not None else target_code
-        
-        # Expanderで折りたたみ可能に（最初の100銘柄は開いた状態）
-        with st.expander(f"📈 {idx}/{len(display_codes)} - {target_code}: {stock_name}", expanded=(idx <= 100)):
-            load_charts = st.toggle(
-                "Load charts for this stock",
-                key=f"load_charts_{target_code}",
-                value=(idx <= 5)
-            )
-            if not load_charts:
-                st.caption("Enable to load charts for this stock.")
-                continue
+    for idx, target_code in enumerate(selected_codes, 1):
+        stock_name = stock_name_map.get(target_code, target_code)
+
+        with st.container(border=True):
+            st.subheader(f"📈 {idx}/{len(selected_codes)} - {target_code}: {stock_name}")
+
             # 3つのカラムを作成
             cols = st.columns(3)
-            
-            # 並列実行のためのExecutor（パフォーマンス最適化）
-            ctx = get_script_run_ctx()
 
-            def run_with_context(ctx, func, *args, **kwargs):
-                add_script_run_ctx(ctx=ctx)
-                return func(*args, **kwargs)
+            for i, (interval, days) in enumerate(interval_configs):
+                try:
+                    data = load_and_process_data(target_code, interval, days)
+                except Exception as e:
+                    data = None
 
-            # 並列度を上げて高速化
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                future_to_index = {}
-                for i, (interval, days) in enumerate(interval_configs):
-                    # ラッパー関数を経由して実行することでコンテキストを伝播
-                    future = executor.submit(run_with_context, ctx, load_and_process_data, target_code, interval, days)
-                    future_to_index[future] = i
-
-                for future in concurrent.futures.as_completed(future_to_index):
-                    i = future_to_index[future]
-                    interval, days = interval_configs[i]
-                    
-                    try:
-                        data = future.result(timeout=10)  # タイムアウト設定
-                    except Exception as e:
-                        data = None
-                        # エラーログを簡略化
-
-                    with cols[i]:
-                        if data is not None and not data.empty:
-                            render_chart(data, f'{interval}')
-                        else:
-                            st.caption(f"No data ({interval})")
+                with cols[i]:
+                    if data is not None and not data.empty:
+                        render_chart(data, f"{interval}")
+                    else:
+                        st.caption(f"No data ({interval})")
 elif not new_selected_codes:
     st.info("💡 Please select stocks from the sidebar and click 'Display Charts'.")
 else:
