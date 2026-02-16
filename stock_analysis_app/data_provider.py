@@ -11,13 +11,6 @@ else:
     from pyspark.sql import functions as F
     from pyspark.sql.window import Window
 
-try:
-    spark = get_spark()
-except Exception as e:
-    st.error(f"Failed to connect to Databricks: {e}")
-    # 接続失敗時は続行不可だが、importエラーを避けるため後続でガードする
-    spark = None
-
 @st.cache_data(ttl=3600)
 def load_stock_list():
     try:
@@ -32,6 +25,11 @@ def load_stock_list():
                     cursor.execute(query)
                     df = cursor.fetchall_arrow().to_pandas()
         else:
+            try:
+                spark = get_spark()
+            except Exception as e:
+                st.error(f"Failed to connect to Databricks: {e}")
+                return pd.DataFrame()
             if spark is None: return pd.DataFrame()
             df = spark.table("main.default.stock_list").toPandas()
         
@@ -98,6 +96,11 @@ def load_and_process_data(code, interval, days):
             
         else:
             # --- Databricks Connect (Spark) モード ---
+            try:
+                spark = get_spark()
+            except Exception as e:
+                st.error(f"Failed to connect to Databricks: {e}")
+                return None
             if spark is None: return None
             table_name = "main.default.stock_prices"
             df = spark.table(table_name).filter(F.col("code") == code)

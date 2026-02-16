@@ -18,6 +18,7 @@ if IS_SQL_MODE:
 else:
     from databricks.connect import DatabricksSession
 
+@st.cache_resource
 def get_spark():
     """Sparkセッションを取得または初期化する (Databricks Apps モードのみ)"""
     if IS_SQL_MODE:

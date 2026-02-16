@@ -352,6 +352,14 @@ if show_charts and new_selected_codes:
         
         # Expanderで折りたたみ可能に（最初の100銘柄は開いた状態）
         with st.expander(f"📈 {idx}/{len(display_codes)} - {target_code}: {stock_name}", expanded=(idx <= 100)):
+            load_charts = st.toggle(
+                "Load charts for this stock",
+                key=f"load_charts_{target_code}",
+                value=(idx <= 5)
+            )
+            if not load_charts:
+                st.caption("Enable to load charts for this stock.")
+                continue
             # 3つのカラムを作成
             cols = st.columns(3)
             
