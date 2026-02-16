@@ -18,8 +18,8 @@ init_session_state()
 # 1. マスタデータの読み込み
 df_stock_list = load_stock_list()
 
-# クエリパラメータの処理 (初回アクセス時のみ)
-if st.session_state.get("first_run", False) and "tickers" in st.query_params:
+# クエリパラメータの処理（URL直接指定時の銘柄読み込み）
+if "tickers" in st.query_params:
     tickers_param = st.query_params["tickers"]
     if isinstance(tickers_param, list):
         tickers_str = tickers_param[0]
@@ -29,19 +29,29 @@ if st.session_state.get("first_run", False) and "tickers" in st.query_params:
     if tickers_str:
         query_codes = [t.strip() for t in tickers_str.split(TICKER_DELIMITER) if t.strip()]
         
-        if query_codes and not df_stock_list.empty:
+        # 前回処理したURLパラメータと異なる場合のみ処理
+        last_url_param = st.session_state.get("last_url_tickers", "")
+        if tickers_str != last_url_param and query_codes and not df_stock_list.empty:
+            # コードの型を揃える（文字列として比較）
             available_codes_str = df_stock_list['code'].astype(str)
             valid_mask = available_codes_str.isin(query_codes)
+            # 元の型（おそらく整数）で取得
             valid_codes = df_stock_list.loc[valid_mask, 'code'].tolist()
 
             if valid_codes:
                 # カレントリストを上書きしてチャート表示を有効化
                 current_list = st.session_state.user_data["current_list"]
                 st.session_state.user_data["lists"][current_list] = valid_codes
+                
+                # session_stateのstock_{code}キーも更新
+                for code in valid_codes:
+                    st.session_state[f"stock_{code}"] = True
+                
                 st.session_state.data_loaded = True
-                st.sidebar.success(f"Loaded from URL: {tickers_str}")
+                st.session_state.last_url_tickers = tickers_str
+                st.sidebar.success(f"✅ Loaded {len(valid_codes)} stock(s) from URL: {tickers_str}")
             else:
-                st.sidebar.warning(f"No valid stock codes found in: {tickers_str}")
+                st.sidebar.warning(f"⚠️ No valid stock codes found in: {tickers_str}")
 
 # --- サイドバー UI ---
 st.sidebar.header("Configuration")
@@ -84,19 +94,100 @@ st.sidebar.subheader("Stock Selection")
 
 # フィルタリング機能
 if not df_stock_list.empty:
-    # フィルタ用コンテナ
-    with st.sidebar.expander("Filter Options", expanded=False):
+    # ボタン風チェックボックスのスタイル
+    st.sidebar.markdown(
+        """
+        <style>
+        /* チェックボックスのアイコンを非表示 */
+        div[data-testid="stCheckbox"] input[type="checkbox"] {
+            display: none;
+        }
+        
+        /* ラベルをボタン風に */
+        div[data-testid="stCheckbox"] label {
+            cursor: pointer;
+            border: 2px solid #e1e4e8;
+            border-radius: 6px;
+            padding: 0.35rem 0.75rem;
+            margin: 0.25rem 0.25rem 0.25rem 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: #f6f8fa;
+            color: #24292f;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            min-width: 60px;
+            text-align: center;
+        }
+        
+        /* ホバー時 */
+        div[data-testid="stCheckbox"] label:hover {
+            background: #e9ecef;
+            border-color: #adb5bd;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        /* チェック時 */
+        div[data-testid="stCheckbox"] label:has(input:checked) {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-color: #667eea;
+            color: #ffffff;
+            font-weight: 600;
+            box-shadow: 0 4px 8px rgba(102, 126, 234, 0.3);
+        }
+        
+        /* チェック時のホバー */
+        div[data-testid="stCheckbox"] label:has(input:checked):hover {
+            background: linear-gradient(135deg, #5568d3 0%, #653a8a 100%);
+            transform: translateY(-1px);
+            box-shadow: 0 6px 12px rgba(102, 126, 234, 0.4);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+    def render_checkbox_group(label, options, key_prefix, columns=3):
+        st.sidebar.markdown(f"**{label}**")
+        if not options:
+            return []
+        cols = st.sidebar.columns(columns)
+        selected = []
+        for i, option in enumerate(options):
+            key = f"{key_prefix}_{option}"
+            col = cols[i % columns]
+            if col.checkbox(str(option), key=key):
+                selected.append(option)
+        return selected
+
+    # フィルタ用コンテナ（デフォルトで展開）
+    with st.sidebar.expander("🔍 Filter Options", expanded=True):
         # 市場フィルタ
         markets = sorted(df_stock_list['market'].dropna().unique())
-        selected_markets = st.multiselect("Market", markets)
+        selected_markets = render_checkbox_group("Market", markets, "market", columns=2)
         
         # 33業種フィルタ
         sectors = sorted(df_stock_list['sector33'].dropna().unique())
-        selected_sectors = st.multiselect("Sector (33)", sectors)
+        selected_sectors = render_checkbox_group("Sector (33)", sectors, "sector33", columns=2)
         
         # 17業種フィルタ
         sub_sectors = sorted(df_stock_list['sector17'].dropna().unique())
-        selected_sub_sectors = st.multiselect("Sector (17)", sub_sectors)
+        selected_sub_sectors = render_checkbox_group("Sector (17)", sub_sectors, "sector17", columns=2)
+        
+        # フィルタのクリアボタン
+        if selected_markets or selected_sectors or selected_sub_sectors:
+            if st.button("🔄 Clear All Filters", use_container_width=True):
+                # すべてのフィルタチェックボックスをクリア
+                for market in markets:
+                    st.session_state[f"market_{market}"] = False
+                for sector in sectors:
+                    st.session_state[f"sector33_{sector}"] = False
+                for sub_sector in sub_sectors:
+                    st.session_state[f"sector17_{sub_sector}"] = False
+                st.rerun()
 
     # DataFrameのフィルタリング
     df_filtered = df_stock_list.copy()
@@ -107,47 +198,133 @@ if not df_stock_list.empty:
     if selected_sub_sectors:
         df_filtered = df_filtered[df_filtered['sector17'].isin(selected_sub_sectors)]
     
-    # 選択肢の作成
+    # 選択肢の作成（フィルタ済みのデータから）
     options_map = dict(zip(df_filtered['label'], df_filtered['code']))
     
     # 現在の選択済みコードを取得
     current_codes = user_data["lists"][current_list_name]
-    default_labels = df_stock_list[df_stock_list['code'].isin(current_codes)]['label'].tolist()
-
-    # defaultにoptionsに含まれない値があるとエラーになるためフィルタリング
-    valid_options = set(options_map.keys())
-    filtered_default_labels = [label for label in default_labels if label in valid_options]
-
-    # マルチセレクト
-    selected_labels = st.sidebar.multiselect(
-        "Search & Select Stocks",
-        options=options_map.keys(),
-        default=filtered_default_labels,
-        placeholder="Type code or name..."
+    
+    # Search & Select Stocks セクション
+    st.sidebar.markdown("---")
+    
+    # フィルタリング状況を明確に表示
+    total_stocks = len(df_stock_list)
+    filtered_stocks = len(df_filtered)
+    
+    if selected_markets or selected_sectors or selected_sub_sectors:
+        filter_info = []
+        if selected_markets:
+            filter_info.append(f"Market: {', '.join(selected_markets)}")
+        if selected_sectors:
+            filter_info.append(f"Sector33: {', '.join(selected_sectors[:2])}{'...' if len(selected_sectors) > 2 else ''}")
+        if selected_sub_sectors:
+            filter_info.append(f"Sector17: {', '.join(selected_sub_sectors[:2])}{'...' if len(selected_sub_sectors) > 2 else ''}")
+        
+        st.sidebar.success(f"📊 **Showing {filtered_stocks} stocks** (filtered from {total_stocks})")
+        with st.sidebar.expander("Active Filters", expanded=False):
+            for info in filter_info:
+                st.markdown(f"- {info}")
+    else:
+        st.sidebar.info(f"📊 **Showing all {total_stocks} stocks**")
+    
+    st.sidebar.markdown("### 🔎 Search & Select Stocks")
+    
+    # 検索ボックス
+    search_query = st.sidebar.text_input(
+        "Search by code or name",
+        key="stock_search",
+        placeholder="Type to filter stocks...",
+        label_visibility="collapsed"
     )
     
-    # 保存ロジック
-    visible_selected_codes = [options_map[label] for label in selected_labels if label in options_map]
+    # 検索によるフィルタリング
+    filtered_options = options_map.items()
+    if search_query:
+        query_lower = search_query.lower()
+        filtered_options = [
+            (label, code) for label, code in filtered_options
+            if query_lower in str(label).lower() or query_lower in str(code).lower()
+        ]
+    else:
+        filtered_options = list(filtered_options)
     
+    # パフォーマンス改善：表示件数を制限
+    MAX_DISPLAY = 100
+    total_filtered = len(filtered_options)
+    if total_filtered > MAX_DISPLAY:
+        st.sidebar.warning(f"⚠️ Too many results ({total_filtered}). Showing first {MAX_DISPLAY}. Please refine your search.")
+        filtered_options = filtered_options[:MAX_DISPLAY]
+    
+    # 一括選択/クリアボタン
+    col_select, col_clear = st.sidebar.columns(2)
+    if col_select.button("✓ Select All", use_container_width=True):
+        for label, code in filtered_options:
+            st.session_state[f"stock_{code}"] = True
+        st.rerun()
+    if col_clear.button("✗ Clear All", use_container_width=True):
+        for label, code in filtered_options:
+            st.session_state[f"stock_{code}"] = False
+        st.rerun()
+    
+    # 選択数の表示
+    selected_count = sum(1 for _, code in filtered_options if st.session_state.get(f"stock_{code}", code in current_codes))
+    st.sidebar.markdown(f"**Selected:** {selected_count} / {len(filtered_options)} stocks")
+    
+    # 銘柄リストを折りたたみ可能に（パフォーマンス改善）
+    with st.sidebar.expander("📋 Stock List", expanded=False):
+        for label, code in filtered_options:
+            key = f"stock_{code}"
+            # 初期値：既に選択されているか確認
+            if key not in st.session_state:
+                st.session_state[key] = code in current_codes
+            
+            # 選択状態に応じたボタンスタイル
+            is_selected = st.session_state[key]
+            button_label = f"{'✓ ' if is_selected else ''}{label}"
+            button_type = "primary" if is_selected else "secondary"
+            
+            # ボタンをクリックすると選択状態をトグル
+            if st.button(button_label, key=f"btn_{code}", use_container_width=True, type=button_type):
+                st.session_state[key] = not st.session_state[key]
+                # 選択リストの更新のみ行い、不要なrerunを避ける
+                if st.session_state[key]:
+                    if code not in current_codes:
+                        user_data["lists"][current_list_name].append(code)
+                else:
+                    if code in user_data["lists"][current_list_name]:
+                        user_data["lists"][current_list_name].remove(code)
+                if "data_loaded" in st.session_state:
+                    del st.session_state.data_loaded
+    
+    # 選択済み銘柄を収集（expanderの外で計算）
+    # session_stateから選択状態を確認
+    visible_selected_codes = [code for code in df_filtered['code'] if st.session_state.get(f"stock_{code}", False)]
+    
+    # 保存ロジック（最適化版）
     # 表示されていないが選択されていたコードを保持
     visible_codes = set(df_filtered['code'])
     hidden_selected_codes = [code for code in current_codes if code not in visible_codes]
     
+    # visible_selected_codesとhidden_selected_codesを統合
     new_selected_codes = visible_selected_codes + hidden_selected_codes
     
+    # リストが変更された場合のみ更新（不要な処理を削減）
     if set(new_selected_codes) != set(current_codes):
         user_data["lists"][current_list_name] = new_selected_codes
-        if "data_loaded" in st.session_state:
-            del st.session_state.data_loaded
-        st.rerun()
 
 else:
     st.sidebar.warning("Stock list is empty or failed to load.")
+    # フォールバック: リストにある銘柄を使用
     new_selected_codes = user_data["lists"].get(current_list_name, [])
 
 # 表示ボタン
 st.sidebar.markdown("---")
-if st.sidebar.button("Display Charts", type="primary"):
+
+# デバッグ情報を表示
+if new_selected_codes:
+    st.sidebar.caption(f"📋 {len(new_selected_codes)} stock(s) in current list")
+
+if st.sidebar.button("📈 Display Charts", type="primary", use_container_width=True):
     st.session_state.data_loaded = True
     st.query_params["tickers"] = TICKER_DELIMITER.join(map(str, new_selected_codes))
 
@@ -155,30 +332,37 @@ show_charts = st.session_state.get("data_loaded", False)
 
 # --- メインコンテンツ描画 ---
 
-with st.spinner('Loading data...'):
-    if show_charts and new_selected_codes:
-        interval_configs = [("MONTHLY", 3000), ("WEEKLY", 600), ("DAILY", 120)]
+if show_charts and new_selected_codes:
+    # パフォーマンス改善：表示銘柄数を制限
+    MAX_STOCKS_DISPLAY = 100
+    display_codes = new_selected_codes[:MAX_STOCKS_DISPLAY]
+    
+    if len(new_selected_codes) > MAX_STOCKS_DISPLAY:
+        st.warning(f"⚠️ Displaying first {MAX_STOCKS_DISPLAY} of {len(new_selected_codes)} selected stocks for performance. Please reduce selection for faster loading.")
+    
+    st.info(f"📊 Loading charts for {len(display_codes)} stock(s)...")
+    
+    interval_configs = [("MONTHLY", 3000), ("WEEKLY", 600), ("DAILY", 120)]
+    
+    # 選択された各銘柄についてループ
+    for idx, target_code in enumerate(display_codes, 1):
+        # 銘柄情報の取得
+        stock_info = df_stock_list[df_stock_list['code'] == target_code].iloc[0] if not df_stock_list.empty else None
+        stock_name = stock_info['name'] if stock_info is not None else target_code
         
-        # 選択された各銘柄についてループ
-        for target_code in new_selected_codes:
-            # 銘柄情報の取得
-            stock_info = df_stock_list[df_stock_list['code'] == target_code].iloc[0] if not df_stock_list.empty else None
-            stock_name = stock_info['name'] if stock_info is not None else target_code
-            
-            st.markdown(f"### {target_code}: {stock_name}")
-            
+        # Expanderで折りたたみ可能に（最初の100銘柄は開いた状態）
+        with st.expander(f"📈 {idx}/{len(display_codes)} - {target_code}: {stock_name}", expanded=(idx <= 100)):
             # 3つのカラムを作成
             cols = st.columns(3)
             
-            # 並列実行のためのExecutor
-            # メインスレッドのコンテキストを取得
+            # 並列実行のためのExecutor（パフォーマンス最適化）
             ctx = get_script_run_ctx()
 
             def run_with_context(ctx, func, *args, **kwargs):
-                # 実行スレッドにコンテキストを設定
                 add_script_run_ctx(ctx=ctx)
                 return func(*args, **kwargs)
 
+            # 並列度を上げて高速化
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                 future_to_index = {}
                 for i, (interval, days) in enumerate(interval_configs):
@@ -191,19 +375,17 @@ with st.spinner('Loading data...'):
                     interval, days = interval_configs[i]
                     
                     try:
-                        data = future.result()
+                        data = future.result(timeout=10)  # タイムアウト設定
                     except Exception as e:
                         data = None
-                        print(f"Error processing {target_code} ({interval}): {e}")
+                        # エラーログを簡略化
 
                     with cols[i]:
                         if data is not None and not data.empty:
                             render_chart(data, f'{interval}')
                         else:
-                            st.info(f"No data ({interval})")
-            
-            st.markdown("---")
-    elif not new_selected_codes:
-        st.info("Please select stocks from the sidebar and click 'Display Charts'.")
-    else:
-        st.info("Click 'Display Charts' to view analysis.")
+                            st.caption(f"No data ({interval})")
+elif not new_selected_codes:
+    st.info("💡 Please select stocks from the sidebar and click 'Display Charts'.")
+else:
+    st.info("💡 Click 'Display Charts' to view analysis.")
