@@ -4,7 +4,7 @@ import streamlit as st
 __all__ = ['init_session_state']
 
 # デフォルトの銘柄リスト構造
-DEFAULT_LISTS = {"Default": ["1301", "3031"]}
+DEFAULT_LISTS = {"Default": []}
 DEFAULT_STATE = {"lists": DEFAULT_LISTS, "current_list": "Default"}
 
 def init_session_state():
