@@ -97,7 +97,7 @@ def load_stock_raw_data(code, report_errors=True):
     return _load_stock_raw_data_impl(code, report_errors)
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=1000)
 def load_stock_raw_data_threadsafe(code):
     return _load_stock_raw_data_impl(code, report_errors=False)
 

@@ -52,21 +52,26 @@ intervals = [
 
 st.info(f"{len(stocks)}セクターのデータを取得しています...")
 
-results_dict = {}
-with st.spinner("データ取得中..."):
-    with ThreadPoolExecutor(max_workers=min(30, len(stocks))) as executor:
+@st.cache_data(ttl=3600*12, show_spinner=False)
+def fetch_all_chart_data(stocks_list, intervals_list):
+    res_dict = {}
+    with ThreadPoolExecutor(max_workers=min(30, len(stocks_list))) as executor:
         futures = {
-            executor.submit(load_multi_interval_data_threadsafe, s['code'], intervals): s
-            for s in stocks
+            executor.submit(load_multi_interval_data_threadsafe, s['code'], intervals_list): s
+            for s in stocks_list
         }
         for future in futures:
             s = futures[future]
             try:
                 res = future.result()
-                results_dict[s['code']] = res
+                res_dict[s['code']] = res
             except Exception as e:
-                st.error(f"{s['name']}({s['code']}) のデータ取得に失敗しました: {e}")
-                results_dict[s['code']] = None
+                print(f"Error fetching data for {s['code']}: {e}")
+                res_dict[s['code']] = None
+    return res_dict
+
+with st.spinner("データ取得中（初回は時間がかかります）..."):
+    results_dict = fetch_all_chart_data(stocks, intervals)
 
 st.subheader("チャート一覧")
 
