@@ -110,6 +110,9 @@ def process_interval_data(df, interval, days, report_errors=True):
         pdf = df.copy()
         if "trade_date" not in pdf.columns:
             return None
+            
+        # 重複レコードが存在する場合に備えて日付で一意にする
+        pdf = pdf.drop_duplicates(subset=["trade_date"])
 
         if interval == "DAILY":
             df_agg = pdf[["code", "trade_date", "open", "high", "low", "close", "volume"]].copy()
