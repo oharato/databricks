@@ -364,7 +364,7 @@ if show_charts and new_selected_codes:
         for code in display_codes
     }
 
-    default_labels = list(label_to_code.keys())[:5]
+    default_labels = list(label_to_code.keys())
     selected_labels = st.multiselect(
         "Stocks to render",
         options=list(label_to_code.keys()),
