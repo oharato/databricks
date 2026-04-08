@@ -45,12 +45,25 @@ Databricks Apps としてデプロイすることを想定していますが、�
 
 このプロジェクトは `Justfile` を使用してタスクを管理しています。
 
+### アプリ起動 / デプロイ
+
 | コマンド | 説明 |
 | :--- | :--- |
 | `just run` | ローカルで Streamlit アプリを起動します (SQL Warehouse モード) |
 | `just sync` | ファイルの変更を検知し、自動的に Databricks Workspace へ同期します |
 | `just deploy` | コードを Databricks Workspace へ同期し、Databricks Apps へデプロイします |
 | `just check-env` | `.env` ファイルの設定状況を確認します |
+
+### テーブル最適化
+
+| コマンド | 説明 |
+| :--- | :--- |
+| `just build-gold-tables` | 週足・月足 Gold テーブル (`stock_prices_weekly` / `stock_prices_monthly`) を作成・更新します |
+| `just optimize` | `stock_prices` に `OPTIMIZE + ZORDER BY (code, dateString)` を実行します |
+| `just optimize-all` | `--optimize` と `--gold-tables` を一括実行します |
+| `just optimize-dry-run` | 実行せず生成される SQL のみ表示します |
+
+> `stock_prices` が Materialized View の場合、`just optimize` はスキップされます（エラーにはなりません）。
 
 ### ローカル実行 (Local SQL Mode)
 
@@ -75,15 +88,22 @@ just deploy
 
 ```text
 .
-├── Justfile                      # タスクランナー定義
+├── Justfile                        # タスクランナー定義
 ├── docs/
-│   └── SPEC.md                   # 仕様書
+│   └── SPEC.md                     # 仕様書
 ├── stock_analysis_app/
-│   ├── .env                      # 環境変数 (git管理外)
-│   ├── .gitignore
-│   ├── app.py                    # アプリケーションのエントリーポイント
-│   ├── app.yaml                  # Databricks Apps 設定
-│   └── requirements.txt          # Python 依存関係
+│   ├── .env                        # 環境変数 (git管理外)
+│   ├── app.py                      # メイン画面
+│   ├── app.yaml                    # Databricks Apps 設定
+│   ├── components.py               # チャート描画 (render_chart / render_chart_compact)
+│   ├── data_provider.py            # データ取得 (バルク IN クエリ対応)
+│   ├── requirements.txt            # Python 依存関係
+│   ├── session_store.py            # セッション状態管理
+│   ├── utils.py                    # 接続モード判定・Spark セッション
+│   ├── pages/
+│   │   └── 01_Sector_Charts.py     # セクター別監視画面
+│   └── scripts/
+│       └── optimize_tables.py      # Gold テーブル作成・OPTIMIZE スクリプト
 └── README.md
 ```
 
@@ -96,4 +116,7 @@ GRANT USE CATALOG ON CATALOG main TO `c4e81045-2e73-457c-b913-315bbd48ff1c`;
 GRANT USE SCHEMA ON SCHEMA main.default TO `c4e81045-2e73-457c-b913-315bbd48ff1c`;
 GRANT SELECT ON TABLE main.default.stock_prices TO `c4e81045-2e73-457c-b913-315bbd48ff1c`;
 GRANT SELECT ON TABLE main.default.stock_list TO `c4e81045-2e73-457c-b913-315bbd48ff1c`;
+-- Gold テーブル (just build-gold-tables で作成後に付与)
+GRANT SELECT ON TABLE main.default.stock_prices_weekly TO `c4e81045-2e73-457c-b913-315bbd48ff1c`;
+GRANT SELECT ON TABLE main.default.stock_prices_monthly TO `c4e81045-2e73-457c-b913-315bbd48ff1c`;
 ```

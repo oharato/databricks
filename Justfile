@@ -55,3 +55,22 @@ check-env:
     @if [ -z "$DATABRICKS_TOKEN" ]; then echo "[エラー] DATABRICKS_TOKEN が設定されていません"; else echo "[OK] DATABRICKS_TOKEN"; fi
     @if [ -z "$DATABRICKS_HTTP_PATH" ]; then echo "[警告] DATABRICKS_HTTP_PATH がありません (ローカル実行には必要です)"; else echo "[OK] DATABRICKS_HTTP_PATH"; fi
     @echo "完了"
+
+# stock_prices テーブルを OPTIMIZE + ZORDER BY (code, <date_col>) で最適化
+optimize:
+    @echo "stock_prices を最適化中 (OPTIMIZE + ZORDER)..."
+    {{python}} stock_analysis_app/scripts/optimize_tables.py --optimize
+
+# 週足・月足 Gold テーブルを事前集計して作成
+build-gold-tables:
+    @echo "Gold テーブル (週足・月足) を作成中..."
+    {{python}} stock_analysis_app/scripts/optimize_tables.py --gold-tables
+
+# OPTIMIZE + Gold テーブル作成を一括実行
+optimize-all:
+    @echo "全最適化処理を実行中..."
+    {{python}} stock_analysis_app/scripts/optimize_tables.py --all
+
+# SQL のみ確認（実行なし）
+optimize-dry-run:
+    {{python}} stock_analysis_app/scripts/optimize_tables.py --all --dry-run

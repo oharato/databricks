@@ -1,9 +1,7 @@
 import streamlit as st
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 from utils import IS_SQL_MODE, TICKER_DELIMITER
 from session_store import init_session_state
-from data_provider import load_stock_list, load_multi_interval_data_threadsafe
+from data_provider import load_stock_list, load_bulk_multi_interval_data
 from components import render_chart
 
 # ページ設定
@@ -381,26 +379,11 @@ if show_charts and new_selected_codes:
     
     interval_configs = [("MONTHLY", 5000), ("WEEKLY", 600), ("DAILY", 120)]
 
-    data_cache = {}
-    load_errors = {}
-    max_workers = min(4, max(1, len(selected_codes)))
     with st.spinner("Loading chart data..."):
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(load_multi_interval_data_threadsafe, code, interval_configs): code
-                for code in selected_codes
-            }
-            for future in as_completed(futures):
-                code = futures[future]
-                try:
-                    data_cache[code] = future.result()
-                except Exception as e:
-                    load_errors[code] = str(e)
-                    data_cache[code] = {interval: None for interval, _ in interval_configs}
-
-    if load_errors:
-        error_codes = ", ".join(sorted(load_errors.keys()))
-        st.error(f"Failed to load data for: {error_codes}")
+        data_cache = load_bulk_multi_interval_data(
+            tuple(sorted(selected_codes)),
+            tuple(interval_configs),
+        )
 
     # 選択された各銘柄についてループ
     for idx, target_code in enumerate(selected_codes, 1):
@@ -417,7 +400,7 @@ if show_charts and new_selected_codes:
             cols = st.columns(3)
 
             for i, (interval, _days) in enumerate(interval_configs):
-                data = data_cache.get(target_code, {}).get(interval)
+                data = data_cache.get(str(target_code), {}).get(interval)
 
                 with cols[i]:
                     if data is not None and not data.empty:

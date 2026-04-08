@@ -12,6 +12,193 @@ else:
     from pyspark.sql import functions as F
     from pyspark.sql.window import Window
 
+
+# ---------------------------------------------------------------------------
+# スキーマ検出・クエリビルダー (SQL Mode)
+# ---------------------------------------------------------------------------
+
+def _escape_sql_literal(value: str) -> str:
+    return value.replace("'", "''")
+
+
+@st.cache_data(ttl=3600)
+def _detect_stock_prices_schema():
+    """stock_prices テーブルの日付カラム名と取得カラムリストを返す。結果は1時間キャッシュ。"""
+    candidates = [
+        (["code", "dateString", "open", "high", "low", "close", "volume"], "dateString"),
+        (["code", "date",       "open", "high", "low", "close", "volume"], "date"),
+        (["code", "trade_date", "open", "high", "low", "close", "volume"], "trade_date"),
+    ]
+    try:
+        with sql.connect(
+            server_hostname=os.getenv("DATABRICKS_HOST"),
+            http_path=HTTP_PATH,
+            access_token=os.getenv("DATABRICKS_TOKEN"),
+        ) as conn:
+            with conn.cursor() as cur:
+                for columns, date_col in candidates:
+                    try:
+                        cur.execute(
+                            f"SELECT {', '.join(columns)} "
+                            f"FROM main.default.stock_prices LIMIT 1"
+                        )
+                        return columns, date_col
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return ["*"], None
+
+
+def _date_filter_sql(date_col: str, lookback_days: int) -> str:
+    """日付カラム種別に合わせた WHERE 条件フラグメントを返す。"""
+    days = max(1, int(lookback_days))
+    if date_col == "dateString":
+        return f"TO_DATE(dateString) >= DATE_SUB(CURRENT_DATE(), {days})"
+    if date_col == "trade_date":
+        return f"CAST(trade_date AS DATE) >= DATE_SUB(CURRENT_DATE(), {days})"
+    if date_col == "date":
+        return (
+            f"CAST(date AS DOUBLE) >= "
+            f"(UNIX_TIMESTAMP(DATE_SUB(CURRENT_DATE(), {days})) * 1000)"
+        )
+    return ""
+
+
+def _build_single_stock_query(code: str, lookback_days=None) -> str:
+    columns, date_col = _detect_stock_prices_schema()
+    safe_code = _escape_sql_literal(str(code))
+    q = (
+        f"SELECT {', '.join(columns)} "
+        f"FROM main.default.stock_prices "
+        f"WHERE code = '{safe_code}'"
+    )
+    if lookback_days is not None and date_col:
+        q += f" AND {_date_filter_sql(date_col, lookback_days)}"
+    if date_col:
+        q += f" ORDER BY {date_col}"
+    return q
+
+
+def _build_bulk_stock_query(codes: tuple, lookback_days=None) -> str:
+    """複数銘柄を一括取得する IN 句クエリを組み立てる。"""
+    columns, date_col = _detect_stock_prices_schema()
+    in_list = ", ".join(f"'{_escape_sql_literal(str(c))}'" for c in codes)
+    q = (
+        f"SELECT {', '.join(columns)} "
+        f"FROM main.default.stock_prices "
+        f"WHERE code IN ({in_list})"
+    )
+    if lookback_days is not None and date_col:
+        q += f" AND {_date_filter_sql(date_col, lookback_days)}"
+    if date_col:
+        q += f" ORDER BY code, {date_col}"
+    return q
+
+
+def _normalize_raw_df(df: pd.DataFrame) -> pd.DataFrame:
+    """取得した生 DataFrame の日付カラムを trade_date に統一し必要列だけ残す。"""
+    if df.empty:
+        return df
+    if "trade_date" not in df.columns:
+        if "dateString" in df.columns:
+            df = df.copy()
+            df["trade_date"] = pd.to_datetime(df["dateString"])
+        elif "date" in df.columns:
+            df = df.copy()
+            df["trade_date"] = pd.to_datetime(df["date"], unit="ms")
+    keep = ["code", "trade_date", "open", "high", "low", "close", "volume"]
+    existing = [c for c in keep if c in df.columns]
+    df = df[existing].copy()
+    df["code"] = df["code"].astype(str)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# バルク取得 (複数銘柄を 1 クエリで取得)
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=3600)
+def load_bulk_raw_data(codes: tuple, lookback_days=None) -> dict:
+    """複数銘柄の生株価データを 1 クエリで取得し、code → DataFrame の dict を返す。
+    codes は tuple にして st.cache_data のキーとして使用する。
+    """
+    if not codes:
+        return {}
+    try:
+        if IS_SQL_MODE:
+            query = _build_bulk_stock_query(codes, lookback_days=lookback_days)
+            with sql.connect(
+                server_hostname=os.getenv("DATABRICKS_HOST"),
+                http_path=HTTP_PATH,
+                access_token=os.getenv("DATABRICKS_TOKEN"),
+            ) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    df = cur.fetchall_arrow().to_pandas()
+        else:
+            spark = get_spark()
+            if spark is None:
+                return {}
+            df = spark.table("main.default.stock_prices").filter(
+                F.col("code").isin(list(codes))
+            )
+            if "dateString" in df.columns:
+                df = df.withColumn(
+                    "trade_date", F.to_timestamp(F.col("dateString"), "yyyy-MM-dd")
+                )
+            elif "date" in df.columns:
+                df = df.withColumn(
+                    "trade_date", (F.col("date").cast("double") / 1000).cast("timestamp")
+                )
+            if lookback_days is not None and "trade_date" in df.columns:
+                df = df.filter(
+                    F.col("trade_date") >= F.date_sub(F.current_date(), int(lookback_days))
+                )
+            df = df.select("code", "trade_date", "open", "high", "low", "close", "volume")
+            df = df.toPandas()
+
+        if df.empty:
+            return {}
+
+        df = _normalize_raw_df(df)
+        df = df.sort_values(["code", "trade_date"])
+
+        return {
+            str(code): grp.reset_index(drop=True)
+            for code, grp in df.groupby("code")
+        }
+    except Exception as e:
+        print(f"Error in load_bulk_raw_data: {e}")
+        return {}
+
+
+@st.cache_data(ttl=3600)
+def load_bulk_multi_interval_data(codes: tuple, interval_configs: tuple) -> dict:
+    """複数銘柄 × 複数インターバルのデータを 1 クエリで取得して返す。
+    戻り値: {code: {interval: processed_df}}
+    codes / interval_configs は tuple (キャッシュキーとして利用)。
+    """
+    if not codes:
+        return {}
+
+    max_days = max((d for _, d in interval_configs), default=365)
+    lookback_days = max_days + 90
+    raw_map = load_bulk_raw_data(codes, lookback_days=lookback_days)
+
+    result = {}
+    for code in codes:
+        raw_df = raw_map.get(str(code))
+        if raw_df is None or raw_df.empty:
+            result[str(code)] = {interval: None for interval, _ in interval_configs}
+            continue
+        result[str(code)] = {
+            interval: process_interval_data(raw_df, interval, days, report_errors=False)
+            for interval, days in interval_configs
+        }
+    return result
+
+
 @st.cache_data(ttl=3600)
 def load_stock_list():
     try:
