@@ -200,6 +200,108 @@ def load_bulk_multi_interval_data(codes: tuple, interval_configs: tuple) -> dict
 
 
 @st.cache_data(ttl=3600)
+def load_new_high_breakout(
+    resistance_days: int = 250,
+    volume_lookback: int = 50,
+    volume_ratio: float = 1.5,
+    market_filter: str | None = None,
+    sector_filter: str | None = None,
+) -> pd.DataFrame:
+    """新高値ブレイク銘柄をスキャンして返す。
+
+    Args:
+        resistance_days: 上値抵抗線の基準期間（営業日）
+        volume_lookback: 平均出来高の基準期間（営業日）
+        volume_ratio:    出来高急増のしきい値（平均の何倍か）
+        market_filter:   市場フィルタ（例: 'プライム'）None で全市場
+        sector_filter:   セクターフィルタ（例: '電気機器'）None で全セクター
+
+    Returns:
+        DataFrame with columns: code, name, market, sector33,
+        breakout_date, breakout_close, resistance_high, breakout_pct,
+        breakout_volume, volume_ratio_actual
+    """
+    # Window 計算のバッファを確保するため +50 日追加
+    lookback_days = resistance_days + volume_lookback + 50
+
+    market_clause = ""
+    sector_clause = ""
+    if market_filter:
+        safe_market = _escape_sql_literal(market_filter)
+        market_clause = f"AND l.market LIKE '%{safe_market}%'"
+    if sector_filter:
+        safe_sector = _escape_sql_literal(sector_filter)
+        sector_clause = f"AND l.sector33 = '{safe_sector}'"
+
+    query = f"""
+        WITH base AS (
+          SELECT
+            code, dateString, close, high, volume,
+            MAX(high) OVER (
+              PARTITION BY code ORDER BY dateString
+              ROWS BETWEEN {resistance_days} PRECEDING AND 1 PRECEDING
+            ) AS resistance_high,
+            AVG(volume) OVER (
+              PARTITION BY code ORDER BY dateString
+              ROWS BETWEEN {volume_lookback} PRECEDING AND 1 PRECEDING
+            ) AS avg_volume
+          FROM main.default.stock_prices
+          WHERE TO_DATE(dateString) >= DATE_SUB(CURRENT_DATE(), {lookback_days})
+        ),
+        latest AS (
+          SELECT MAX(dateString) AS latest_date FROM main.default.stock_prices
+        ),
+        screened AS (
+          SELECT b.*
+          FROM base b, latest l
+          WHERE b.dateString = l.latest_date
+            AND b.close > b.resistance_high
+            AND b.volume >= b.avg_volume * {volume_ratio}
+            AND b.resistance_high IS NOT NULL
+        )
+        SELECT
+          s.code,
+          sl.name,
+          sl.market,
+          sl.sector33,
+          s.dateString         AS breakout_date,
+          s.close              AS breakout_close,
+          s.resistance_high,
+          ROUND(s.close / s.resistance_high - 1, 4) AS breakout_pct,
+          s.volume             AS breakout_volume,
+          ROUND(s.volume / s.avg_volume, 2)         AS volume_ratio_actual
+        FROM screened s
+        JOIN main.default.stock_list sl ON sl.code = s.code
+        WHERE 1=1
+          {market_clause}
+          {sector_clause}
+        ORDER BY volume_ratio_actual DESC
+    """
+
+    try:
+        if IS_SQL_MODE:
+            with sql.connect(
+                server_hostname=os.getenv("DATABRICKS_HOST"),
+                http_path=HTTP_PATH,
+                access_token=os.getenv("DATABRICKS_TOKEN"),
+            ) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    df = cur.fetchall_arrow().to_pandas()
+        else:
+            spark = get_spark()
+            if spark is None:
+                return pd.DataFrame()
+            df = spark.sql(query).toPandas()
+
+        df["code"] = df["code"].astype(str)
+        return df
+    except Exception as e:
+        st.error(f"新高値ブレイクスキャンエラー: {e}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600)
 def load_stock_list():
     try:
         if IS_SQL_MODE:

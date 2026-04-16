@@ -1,0 +1,12 @@
+{
+	"servers": {
+		"edinetdb": {
+			"url": "https://edinetdb.jp/mcp",
+			"type": "http",
+			"headers": {
+				"Authorization": "Bearer edb_e30d92ac50594d11897fd4dc6f1e5795"
+			}
+		}
+	},
+	"inputs": []
+}
